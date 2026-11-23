@@ -1,4 +1,4 @@
--- Public AIz message wall.
+-- Private AIz message inbox.
 -- Run this once in your Supabase project's SQL Editor.
 
 create table if not exists public.community_messages (
@@ -12,15 +12,12 @@ create table if not exists public.community_messages (
 
 alter table public.community_messages enable row level security;
 
--- Visitors can only read and add notes. They cannot edit or delete records.
+-- Visitors may submit notes, but cannot read, edit, or delete any submissions.
 revoke all on table public.community_messages from public, anon, authenticated;
-grant select, insert on table public.community_messages to anon;
+grant usage on schema public to anon;
+grant insert on table public.community_messages to anon;
 
 drop policy if exists "Anyone can read community notes" on public.community_messages;
-create policy "Anyone can read community notes"
-  on public.community_messages for select
-  to anon
-  using (true);
 
 drop policy if exists "Anyone can post community notes" on public.community_messages;
 create policy "Anyone can post community notes"
@@ -30,3 +27,6 @@ create policy "Anyone can post community notes"
     char_length(nickname) <= 32
     and char_length(btrim(message)) between 1 and 1000
   );
+
+-- Tell PostgREST to refresh the list of tables it can serve through the API.
+notify pgrst, 'reload schema';

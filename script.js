@@ -798,55 +798,13 @@ document.querySelector('#cat-message-close').addEventListener('click', () => {
   catMascot.focus();
 });
 
-// The wall uses Supabase when configured; local storage remains a preview fallback.
-const messageStorageKey = 'aiz-community-wall-messages';
-const messageList = document.querySelector('#message-list');
-const wallCount = document.querySelector('#wall-count');
+// Visitors can submit private notes; the page never reads or displays submissions.
 const confessionForm = document.querySelector('#confession-form');
 const confessionStatus = document.querySelector('#confession-status');
 const supabaseConfig = window.AIZ_SUPABASE_CONFIG || {};
 const supabaseUrl = (supabaseConfig.url || '').trim().replace(/\/$/, '');
 const supabasePublishableKey = (supabaseConfig.publishableKey || '').trim();
-const publicBoardEnabled = /^https:\/\/[a-z0-9-]+\.supabase\.co$/i.test(supabaseUrl) && supabasePublishableKey.length > 10;
-let wallMessages = [];
-
-try {
-  const savedMessages = JSON.parse(localStorage.getItem(messageStorageKey) || '[]');
-  if (Array.isArray(savedMessages)) wallMessages = savedMessages;
-} catch (error) {
-  wallMessages = [];
-}
-
-function renderWall() {
-  messageList.innerHTML = '';
-  wallCount.textContent = `${wallMessages.length} ${wallMessages.length === 1 ? 'NOTE' : 'NOTES'}`;
-  if (wallMessages.length === 0) {
-    const emptyState = document.createElement('p');
-    emptyState.className = 'wall-empty';
-    emptyState.textContent = 'No notes yet. Yours can be the first ✦';
-    messageList.append(emptyState);
-    return;
-  }
-
-  wallMessages.forEach((entry) => {
-    const card = document.createElement('article');
-    card.className = 'message-card';
-    const heading = document.createElement('div');
-    heading.className = 'message-card-heading';
-    const author = document.createElement('strong');
-    author.textContent = entry.nickname || 'Anonymous';
-    const date = document.createElement('time');
-    const timestamp = new Date(entry.created_at || entry.createdAt);
-    date.dateTime = timestamp.toISOString();
-    date.textContent = timestamp.toLocaleDateString(undefined, { month: 'short', day: 'numeric' });
-    const content = document.createElement('p');
-    content.textContent = entry.message;
-    heading.append(author, date);
-    card.append(heading, content);
-    messageList.append(card);
-  });
-}
-renderWall();
+const privateInboxEnabled = /^https:\/\/[a-z0-9-]+\.supabase\.co$/i.test(supabaseUrl) && supabasePublishableKey.length > 10;
 
 async function supabaseRequest(path, options = {}) {
   const response = await fetch(`${supabaseUrl}/rest/v1/${path}`, {
@@ -859,26 +817,29 @@ async function supabaseRequest(path, options = {}) {
   });
   if (!response.ok) {
     const details = await response.text();
-    throw new Error(details || `Supabase returned ${response.status}`);
+    throw new Error(`HTTP ${response.status}: ${details || response.statusText}`);
   }
-  return response.status === 204 ? null : response.json();
+  const responseBody = await response.text();
+  if (!responseBody) return null;
+  try {
+    return JSON.parse(responseBody);
+  } catch (parseError) {
+    return responseBody;
+  }
 }
 
-async function loadPublicWall() {
-  if (!publicBoardEnabled) {
-    confessionStatus.textContent = 'Add your Supabase URL and publishable key in supabase-config.js to enable the public board.';
-    return;
-  }
-  confessionStatus.textContent = 'Loading public notes…';
+function privateInboxErrorText(error) {
+  const raw = error?.message || String(error);
   try {
-    wallMessages = await supabaseRequest('community_messages?select=id,nickname,message,created_at&order=created_at.desc&limit=200');
-    renderWall();
-    confessionStatus.textContent = 'Public board connected. Notes are shared with everyone.';
-  } catch (error) {
-    confessionStatus.textContent = 'Could not load the public board. Check the Supabase URL, key, table, and access policies.';
+    const parsed = JSON.parse(raw.replace(/^HTTP \d+: /, ''));
+    const usefulDetails = [parsed.message, parsed.details, parsed.hint, parsed.code].filter(Boolean).join(' · ');
+    if (usefulDetails) return usefulDetails.slice(0, 220);
+  } catch (parseError) {
+    // Network errors and plain-text server errors are shown as provided.
   }
+  if (/failed to fetch|networkerror/i.test(raw)) return 'The browser could not reach Supabase. Check the network and Data API settings.';
+  return raw.slice(0, 220);
 }
-loadPublicWall();
 
 const confessionMessage = document.querySelector('#confession-message');
 confessionMessage.addEventListener('input', () => {
@@ -890,39 +851,24 @@ confessionForm.addEventListener('submit', async (event) => {
   const message = confessionMessage.value.trim();
   if (!message) return;
 
-  if (publicBoardEnabled) {
-    const submitButton = confessionForm.querySelector('[type="submit"]');
-    submitButton.disabled = true;
-    confessionStatus.textContent = 'Posting your note…';
-    try {
-      await supabaseRequest('community_messages', {
-        method: 'POST',
-        body: JSON.stringify({ nickname: nickname || 'Anonymous', message }),
-      });
-      confessionForm.reset();
-      document.querySelector('#message-count').textContent = '0 / 1000';
-      await loadPublicWall();
-      confessionStatus.textContent = 'Your note is now on the public board. Thanks for sharing!';
-    } catch (error) {
-      confessionStatus.textContent = 'Your note could not be posted. Check the Supabase table and access policies, then try again.';
-    } finally {
-      submitButton.disabled = false;
-    }
+  if (!privateInboxEnabled) {
+    confessionStatus.textContent = 'The private inbox is not configured yet. Add the Supabase URL and publishable key.';
     return;
   }
-
-  const newEntry = { nickname, message, createdAt: new Date().toISOString() };
-  wallMessages.unshift(newEntry);
-  let saved = true;
+  const submitButton = confessionForm.querySelector('[type="submit"]');
+  submitButton.disabled = true;
+  confessionStatus.textContent = 'Sending your private note…';
   try {
-    localStorage.setItem(messageStorageKey, JSON.stringify(wallMessages));
+    await supabaseRequest('community_messages', {
+      method: 'POST',
+      body: JSON.stringify({ nickname: nickname || 'Anonymous', message }),
+    });
+    confessionForm.reset();
+    document.querySelector('#message-count').textContent = '0 / 1000';
+    confessionStatus.textContent = 'Your note was delivered privately to Team AIz. Thank you!';
   } catch (error) {
-    saved = false;
+    confessionStatus.textContent = `Your note could not be sent: ${privateInboxErrorText(error)}`;
+  } finally {
+    submitButton.disabled = false;
   }
-  renderWall();
-  confessionForm.reset();
-  document.querySelector('#message-count').textContent = '0 / 1000';
-  confessionStatus.textContent = saved
-    ? 'Your note was added to this device’s community wall.'
-    : 'Your note is shown for this visit, but this browser could not save it.';
 });
